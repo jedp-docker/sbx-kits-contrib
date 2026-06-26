@@ -41,10 +41,15 @@ environment:
 
 commands:
   install:
-    # Ensure Node.js ≥ 20.19 is available. The claude-code-docker image ships
-    # Node already; this guard makes the mixin safe on other agent templates.
     - command: |
         set -e
+        # Skip everything if Chromium is already present (e.g. pre-baked template image).
+        CHROME_BIN=$(find /opt/playwright-browsers -name chrome -o -name chromium 2>/dev/null | head -1)
+        if [ -x "${CHROME_BIN:-}" ] && command -v certutil >/dev/null 2>&1; then
+          echo "Chromium and certutil already present, skipping install."
+          exit 0
+        fi
+        # Node.js ≥ 20.19
         if ! command -v node >/dev/null 2>&1; then
           apt-get update -qq -y
           apt-get install -y nodejs npm
@@ -54,65 +59,29 @@ commands:
           echo "Node.js ≥ 20.19 required, found $(node --version)" >&2
           exit 1
         fi
-      user: "0"
-      description: Verify Node.js ≥ 20.19 is present
-
-    # Install certutil (from libnss3-tools) for Chrome's NSS certificate store.
-    # Chrome does not use the system OpenSSL/CA bundle — it has its own NSS-based
-    # cert store. Without this the sandbox proxy's MITM certificate is untrusted
-    # by Chrome, causing TLS errors on HTTPS pages even though Node/curl work fine.
-    - command: |
-        set -e
+        # libnss3-tools (certutil) for Chrome's NSS certificate store
         apt-get update -qq -y
         apt-get install -y --no-install-recommends libnss3-tools
-      user: "0"
-      description: Install libnss3-tools (provides certutil for Chrome's NSS cert store)
-
-    # Install the Playwright-managed Chromium binary and its system dependencies.
-    # We use Playwright's Chromium rather than:
-    #   - google-chrome-stable: no arm64 Linux build (until at least mid-2026)
-    #   - apt chromium-browser: requires snapd, which needs systemd (not in sandbox)
-    # `--with-deps` installs the required shared libraries (libgbm1, libasound2t64,
-    # etc.) via apt, so Chrome actually starts. After install we resolve the binary
-    # path and persist it into CDMCP_CHROME_PATH via the persistent env file so the
-    # wrapper always uses it without version-guessing.
-    - command: |
-        set -e
+        # Playwright Chromium
         export PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
         mkdir -p "$PLAYWRIGHT_BROWSERS_PATH"
-        # Ensure the npm global prefix directory exists. The claude-code-docker image
-        # has this set up already; the shell-docker template and other agent images may
-        # not. Without this, npx fails with ENOENT on /usr/local/share/npm-global/lib.
         NPM_PREFIX=$(npm config get prefix 2>/dev/null || echo /usr/local)
         mkdir -p "${NPM_PREFIX}/lib"
         npx --yes playwright@latest install --with-deps chromium
-        # Resolve the chromium binary path. playwright install places it under a
-        # versioned subdirectory; `playwright install` prints the path on stderr
-        # so we use `find` instead.
         CHROME_BIN=$(find "$PLAYWRIGHT_BROWSERS_PATH" -name chrome -o -name chromium 2>/dev/null | head -1)
         if [ -z "$CHROME_BIN" ]; then
           echo "Could not find Chromium binary under $PLAYWRIGHT_BROWSERS_PATH" >&2
           exit 1
         fi
-        # Persist so the value survives across shell sessions (CLAUDE_ENV_FILE
-        # sources this file before every Bash invocation in the sandbox).
         PERSIST=/etc/sandbox-persistent.sh
-        # Guard: only write if the value has changed, keeping the file idempotent.
-        if ! grep -qF "CDMCP_CHROME_PATH=${CHROME_BIN}" "$PERSIST" 2>/dev/null; then
-          # Remove any prior CDMCP_CHROME_PATH line first.
-          sed -i '/^export CDMCP_CHROME_PATH=/d' "$PERSIST" 2>/dev/null || true
-          echo "export CDMCP_CHROME_PATH=${CHROME_BIN}" >> "$PERSIST"
-        fi
-        if ! grep -qF "PLAYWRIGHT_BROWSERS_PATH=" "$PERSIST" 2>/dev/null; then
+        sed -i '/^export CDMCP_CHROME_PATH=/d' "$PERSIST" 2>/dev/null || true
+        echo "export CDMCP_CHROME_PATH=${CHROME_BIN}" >> "$PERSIST"
+        grep -qF "PLAYWRIGHT_BROWSERS_PATH=" "$PERSIST" 2>/dev/null || \
           echo "export PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers" >> "$PERSIST"
-        fi
         echo "Chromium installed at: $CHROME_BIN"
       user: "0"
-      description: Install Playwright-managed Chromium (amd64 + arm64) and record binary path
+      description: Install Chromium, libnss3-tools, and record binary path (no-op if pre-baked)
 
-    # Pre-create the empty NSS certificate database as the agent user. The cert
-    # itself is injected by sandboxd at startup (not available at build time), so
-    # we only initialise the database here; the actual import happens in startup.
     - command: |
         set -e
         NSS_DB="$HOME/.pki/nssdb"
