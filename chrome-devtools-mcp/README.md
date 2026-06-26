@@ -71,6 +71,28 @@ Merge into `~/.config/opencode/config.json`:
 }
 ```
 
+## Credentials and login
+
+When Chrome visits a site requiring login, session cookies and tokens are stored in Chrome's profile. The wrapper uses `--isolated`, so this is a temporary directory that chrome-devtools-mcp cleans up on exit — the session is gone when the MCP server stops.
+
+**The agent has full Chrome DevTools Protocol access**, which means it can read cookies, execute JavaScript in the page context, and intercept network requests. A prompt-injected agent could use these capabilities to exfiltrate session credentials — but only to domains permitted by the sandbox network policy. That firewall is the key protection.
+
+### Why the host-side alternative is worse
+
+Running chrome-devtools-mcp on the host (via `sbx mcp add`) rather than inside the sandbox has the same profile behaviour when `--isolated` is used — sessions are still ephemeral. The meaningful difference is the **egress firewall**: host-side Chrome can reach anything your host can, regardless of the sandbox network policy. A prompt-injected agent exfiltrating session credentials has no policy constraint on where it sends them.
+
+### Sites that require login
+
+For sites where you need to authenticate, prefer attach mode (`CDMCP_BROWSER_URL`): start Chrome separately, log in manually outside the agent session, then point the MCP server at it. The agent still has CDP access to the live session, but it did not drive the authentication flow.
+
+```bash
+google-chrome --headless --no-sandbox \
+  --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 &
+
+export CDMCP_BROWSER_URL=http://127.0.0.1:9222
+claude mcp add chrome-devtools --scope local -- chrome-devtools-mcp
+```
+
 ## Network allowlist
 
 The browser's egress goes through the **sandbox network proxy** and is subject to the sandbox's network policy. Domains your agent navigates to must be explicitly allowed.
