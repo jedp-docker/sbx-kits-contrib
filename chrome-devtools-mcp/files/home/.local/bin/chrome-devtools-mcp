@@ -15,6 +15,10 @@
 # Set CDMCP_BROWSER_URL=http://127.0.0.1:9222 to attach to an already-running
 # Chrome's remote-debugging endpoint instead of launching one.
 set -e
+# Source the persistent env file so CDMCP_CHROME_PATH is available even when
+# this script is launched by an MCP client that didn't inherit it.
+# shellcheck disable=SC1091
+[ -f /etc/sandbox-persistent.sh ] && . /etc/sandbox-persistent.sh
 if [ -n "$CDMCP_BROWSER_URL" ]; then
   exec npx -y chrome-devtools-mcp@latest \
     --browserUrl "$CDMCP_BROWSER_URL" \
