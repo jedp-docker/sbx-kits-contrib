@@ -158,8 +158,8 @@ commands:
         - |
           set -e
           [ -n "$WORKSPACE_DIR" ] || exit 0
-          command -v claude >/dev/null 2>&1 || exit 0
           export PATH="$HOME/.local/bin:$HOME/.claude/local:$PATH"
+          command -v claude >/dev/null 2>&1 || exit 0
           cd "$WORKSPACE_DIR"
           claude mcp remove chrome-devtools --scope local >/dev/null 2>&1 || true
           claude mcp add chrome-devtools --scope local -- chrome-devtools-mcp
