@@ -1,0 +1,208 @@
+schemaVersion: "1"
+kind: mixin
+name: chrome-devtools-mcp
+displayName: Chrome DevTools MCP
+description: >-
+  Provisions a headless Chromium browser inside the sandbox, routed through the
+  sandbox proxy and trusted against the sandbox TLS interception CA. Provides
+  the `chrome-devtools-mcp` wrapper command so any agent can register
+  chrome-devtools-mcp as an in-sandbox stdio MCP server with a single `mcp add`.
+
+network:
+  allowedDomains:
+    # apt-get update touches all configured sources, including the three Ubuntu
+    # mirrors below. All three must be listed even though only one or two will
+    # be used on any given arch. apt exits non-zero if ANY configured source
+    # fails to refresh.
+    - archive.ubuntu.com
+    - security.ubuntu.com
+    - ports.ubuntu.com        # arm64 packages are served from here
+    # npm registry — `npx playwright install` resolves and downloads from npm.
+    - registry.npmjs.org
+    # Playwright downloads the Chromium browser binary from its CDN.
+    # Microsoft's CDN may also be used depending on the Playwright version.
+    - cdn.playwright.dev
+    - playwright.download.prss.microsoft.com
+
+environment:
+  variables:
+    # Absolute path to the Playwright-managed Chromium binary. Resolved at
+    # install time and written here so the wrapper always uses the right binary
+    # without version-string guessing. Overridable if you supply your own Chrome.
+    CDMCP_CHROME_PATH: ""
+    # The sandbox network proxy endpoint. Chrome is pointed at this so its HTTP
+    # traffic obeys the sandbox egress policy. Overridable but rarely needs to
+    # change inside an sbx sandbox.
+    CDMCP_PROXY: "http://gateway.docker.internal:3128"
+    # When non-empty, the wrapper passes --browserUrl to attach to an
+    # already-running Chrome's remote-debugging endpoint instead of launching
+    # one. Set to e.g. http://127.0.0.1:9222 if you start Chrome separately.
+    CDMCP_BROWSER_URL: ""
+
+commands:
+  install:
+    # Ensure Node.js ≥ 20.19 is available. The claude-code-docker image ships
+    # Node already; this guard makes the mixin safe on other agent templates.
+    - command: |
+        set -e
+        if ! command -v node >/dev/null 2>&1; then
+          apt-get update -qq -y
+          apt-get install -y nodejs npm
+        fi
+        node_major=$(node --version | sed 's/v\([0-9]*\).*/\1/')
+        if [ "$node_major" -lt 20 ]; then
+          echo "Node.js ≥ 20.19 required, found $(node --version)" >&2
+          exit 1
+        fi
+      user: "0"
+      description: Verify Node.js ≥ 20.19 is present
+
+    # Install certutil (from libnss3-tools) for Chrome's NSS certificate store.
+    # Chrome does not use the system OpenSSL/CA bundle — it has its own NSS-based
+    # cert store. Without this the sandbox proxy's MITM certificate is untrusted
+    # by Chrome, causing TLS errors on HTTPS pages even though Node/curl work fine.
+    - command: |
+        set -e
+        apt-get update -qq -y
+        apt-get install -y --no-install-recommends libnss3-tools
+      user: "0"
+      description: Install libnss3-tools (provides certutil for Chrome's NSS cert store)
+
+    # Install the Playwright-managed Chromium binary and its system dependencies.
+    # We use Playwright's Chromium rather than:
+    #   - google-chrome-stable: no arm64 Linux build (until at least mid-2026)
+    #   - apt chromium-browser: requires snapd, which needs systemd (not in sandbox)
+    # `--with-deps` installs the required shared libraries (libgbm1, libasound2t64,
+    # etc.) via apt, so Chrome actually starts. After install we resolve the binary
+    # path and persist it into CDMCP_CHROME_PATH via the persistent env file so the
+    # wrapper always uses it without version-guessing.
+    - command: |
+        set -e
+        export PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+        mkdir -p "$PLAYWRIGHT_BROWSERS_PATH"
+        # Ensure the npm global prefix directory exists. The claude-code-docker image
+        # has this set up already; the shell-docker template and other agent images may
+        # not. Without this, npx fails with ENOENT on /usr/local/share/npm-global/lib.
+        NPM_PREFIX=$(npm config get prefix 2>/dev/null || echo /usr/local)
+        mkdir -p "${NPM_PREFIX}/lib"
+        npx --yes playwright@latest install --with-deps chromium
+        # Resolve the chromium binary path. playwright install places it under a
+        # versioned subdirectory; `playwright install` prints the path on stderr
+        # so we use `find` instead.
+        CHROME_BIN=$(find "$PLAYWRIGHT_BROWSERS_PATH" -name chrome -o -name chromium 2>/dev/null | head -1)
+        if [ -z "$CHROME_BIN" ]; then
+          echo "Could not find Chromium binary under $PLAYWRIGHT_BROWSERS_PATH" >&2
+          exit 1
+        fi
+        # Persist so the value survives across shell sessions (CLAUDE_ENV_FILE
+        # sources this file before every Bash invocation in the sandbox).
+        PERSIST=/etc/sandbox-persistent.sh
+        # Guard: only write if the value has changed, keeping the file idempotent.
+        if ! grep -qF "CDMCP_CHROME_PATH=${CHROME_BIN}" "$PERSIST" 2>/dev/null; then
+          # Remove any prior CDMCP_CHROME_PATH line first.
+          sed -i '/^export CDMCP_CHROME_PATH=/d' "$PERSIST" 2>/dev/null || true
+          echo "export CDMCP_CHROME_PATH=${CHROME_BIN}" >> "$PERSIST"
+        fi
+        if ! grep -qF "PLAYWRIGHT_BROWSERS_PATH=" "$PERSIST" 2>/dev/null; then
+          echo "export PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers" >> "$PERSIST"
+        fi
+        echo "Chromium installed at: $CHROME_BIN"
+      user: "0"
+      description: Install Playwright-managed Chromium (amd64 + arm64) and record binary path
+
+    # Pre-create the empty NSS certificate database as the agent user. The cert
+    # itself is injected by sandboxd at startup (not available at build time), so
+    # we only initialise the database here; the actual import happens in startup.
+    - command: |
+        set -e
+        NSS_DB="$HOME/.pki/nssdb"
+        mkdir -p "$NSS_DB"
+        if [ ! -f "$NSS_DB/cert9.db" ]; then
+          certutil -N --empty-password -d "sql:$NSS_DB"
+        fi
+      user: "1000"
+      description: Pre-create Chrome NSS certificate database for agent user
+
+  startup:
+    # Import the sandbox proxy CA into Chrome's NSS store each boot, idempotently.
+    # sandboxd injects the proxy CA at /usr/local/share/ca-certificates/proxy-ca.crt
+    # at sandbox start (not image-build time) and runs update-ca-certificates so
+    # Node, curl, and Python trust it via the system bundle. Chrome does NOT use the
+    # system bundle; it needs the cert explicitly imported into its NSS store.
+    # Without this, Chrome reports TLS errors on HTTPS pages while curl succeeds.
+    - command:
+        - sh
+        - -c
+        - |
+          set -e
+          PROXY_CA="/usr/local/share/ca-certificates/proxy-ca.crt"
+          NSS_DB="$HOME/.pki/nssdb"
+          CERT_NICK="Docker Sandboxes Proxy CA"
+          [ -f "$PROXY_CA" ] || exit 0
+          [ -d "$NSS_DB" ] || { mkdir -p "$NSS_DB"; certutil -N --empty-password -d "sql:$NSS_DB"; }
+          # Only import if not already present (idempotent on sandbox restart).
+          certutil -L -d "sql:$NSS_DB" -n "$CERT_NICK" >/dev/null 2>&1 && exit 0
+          certutil -A -d "sql:$NSS_DB" -n "$CERT_NICK" -t "CT,," -a -i "$PROXY_CA"
+      user: "1000"
+      description: Import sandbox proxy CA into Chrome's NSS certificate store
+
+
+agentContext: |
+  ## Chrome DevTools MCP
+
+  This sandbox has a headless Chromium browser provisioned and ready to use via
+  the `chrome-devtools-mcp` MCP server. The browser:
+
+  - Runs **inside** the sandbox (not on the host machine)
+  - Routes all traffic through the **sandbox network proxy** — egress is governed
+    by the same policy as the rest of the sandbox
+  - Trusts the sandbox's TLS interception certificate — HTTPS pages work correctly
+    without bypassing certificate verification
+
+  ### Registering the MCP server
+
+  Before you can use it, register the server with your agent once:
+
+  **Claude:**
+  ```
+  claude mcp add chrome-devtools --scope local -- chrome-devtools-mcp
+  ```
+
+  **Codex** — append to `~/.codex/config.toml`:
+  ```toml
+  [mcp_servers.chrome-devtools]
+  type = "stdio"
+  command = "chrome-devtools-mcp"
+  args = []
+  ```
+
+  **Gemini** — merge into `~/.gemini/settings.json`:
+  ```json
+  { "mcpServers": { "chrome-devtools": { "command": "chrome-devtools-mcp", "args": [] } } }
+  ```
+
+  **opencode** — merge into `~/.config/opencode/config.json`:
+  ```json
+  { "mcp": { "chrome-devtools": { "type": "local", "command": "chrome-devtools-mcp", "args": [] } } }
+  ```
+
+  ### Network allowlist
+
+  The browser's egress is subject to the **sandbox network policy**. Domains your
+  agent navigates to must be allowed. To allow a domain:
+
+  ```
+  sbx policy allow network <domain>
+  ```
+
+  ### Attach to an existing Chrome (advanced)
+
+  Set `CDMCP_BROWSER_URL=http://127.0.0.1:9222` before registration if you have
+  started Chrome separately with `--remote-debugging-port=9222`.
+
+  ### Note on `--no-sandbox`
+
+  Chromium's internal renderer sandbox requires Linux user namespaces, which are
+  not available inside a Docker container without `CAP_SYS_ADMIN`. The wrapper
+  uses `--no-sandbox`, which is the standard practice for CI/container Chromium.
+  The sbx container itself is the security boundary.

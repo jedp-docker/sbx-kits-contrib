@@ -1,0 +1,34 @@
+#!/bin/sh
+# Wrapper for chrome-devtools-mcp inside an sbx sandbox.
+# Bakes in the flags required to run headless Chromium correctly:
+#   --no-sandbox        Chrome's own renderer sandbox cannot initialise inside a
+#                       container (no user-namespace permissions); the container
+#                       itself is the security boundary.
+#   --disable-gpu       Prevents GPU-init failures in headless mode.
+#   --disable-dev-shm-usage  Docker default /dev/shm is 64 MB; Chrome crashes
+#                       when it fills. This flag moves shared-mem I/O to /tmp.
+#   --proxyServer       Routes Chrome through the sandbox proxy so its egress
+#                       obeys the same network policy as the rest of the sandbox.
+#   --proxy-bypass-list Prevents proxying loopback (CDP WebSocket, localhost).
+#   --no-usage-statistics / --no-performance-crux  Suppress phone-home requests.
+#
+# Set CDMCP_BROWSER_URL=http://127.0.0.1:9222 to attach to an already-running
+# Chrome's remote-debugging endpoint instead of launching one.
+set -e
+if [ -n "$CDMCP_BROWSER_URL" ]; then
+  exec npx -y chrome-devtools-mcp@latest \
+    --browserUrl "$CDMCP_BROWSER_URL" \
+    "$@"
+fi
+exec npx -y chrome-devtools-mcp@latest \
+  --headless \
+  --isolated \
+  --executablePath "${CDMCP_CHROME_PATH}" \
+  --proxyServer "${CDMCP_PROXY:-http://gateway.docker.internal:3128}" \
+  --chromeArg --no-sandbox \
+  --chromeArg --disable-gpu \
+  --chromeArg --disable-dev-shm-usage \
+  --chromeArg --proxy-bypass-list=localhost,127.0.0.1 \
+  --no-usage-statistics \
+  --no-performance-crux \
+  "$@"
