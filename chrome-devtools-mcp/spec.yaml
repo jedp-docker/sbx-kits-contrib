@@ -146,6 +146,26 @@ commands:
       user: "1000"
       description: Import sandbox proxy CA into Chrome's NSS certificate store
 
+    # Register chrome-devtools-mcp with Claude. Mirrors the pattern used by the
+    # built-in Claude kit to register the MCP gateway: cd to WORKSPACE_DIR so
+    # --scope local keys the entry to the right project, then idempotently
+    # re-register (remove + add) so a sandbox recreate always reflects the
+    # current wrapper flags. No-ops when WORKSPACE_DIR is unset (non-Claude
+    # agents don't set it) or when `claude` is not on PATH.
+    - command:
+        - sh
+        - -c
+        - |
+          set -e
+          [ -n "$WORKSPACE_DIR" ] || exit 0
+          command -v claude >/dev/null 2>&1 || exit 0
+          export PATH="$HOME/.local/bin:$HOME/.claude/local:$PATH"
+          cd "$WORKSPACE_DIR"
+          claude mcp remove chrome-devtools --scope local >/dev/null 2>&1 || true
+          claude mcp add chrome-devtools --scope local -- chrome-devtools-mcp
+      user: "1000"
+      description: Register chrome-devtools-mcp with Claude (no-op for other agents)
+
 
 agentContext: |
   ## Chrome DevTools MCP

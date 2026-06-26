@@ -26,15 +26,9 @@ sbx run gemini --kit ./chrome-devtools-mcp/ .
 
 ## Registering the MCP server
 
-Once inside the sandbox, register `chrome-devtools-mcp` with your agent. Do this once per sandbox (or once per re-create if you use `--scope local`).
-
 ### Claude
 
-```bash
-claude mcp add chrome-devtools --scope local -- chrome-devtools-mcp
-```
-
-Verify: `claude mcp list` should show both `mcp-gateway` (the sbx gateway) and `chrome-devtools`.
+Registration happens automatically at sandbox startup — no manual step needed. Verify with `claude mcp list`, which should show both `mcp-gateway` (the sbx gateway) and `chrome-devtools`.
 
 ### Codex
 
