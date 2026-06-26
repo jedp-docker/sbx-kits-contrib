@@ -13,15 +13,37 @@ The kit **does not** automatically register the MCP server with your agent — t
 
 ## Usage
 
+### Fast start (recommended)
+
+Build a pre-baked image once so sandbox creation skips the Playwright Chromium download (~150 MB). Clone the repo, build, then reference the image on every run:
+
 ```bash
-sbx run claude --kit ./chrome-devtools-mcp/ /path/to/project
+git clone https://github.com/docker/sbx-kits-contrib
+cd sbx-kits-contrib
+docker build -t claude-chrome:latest chrome-devtools-mcp/
+```
+
+Then for every sandbox:
+
+```bash
+sbx run claude --template claude-chrome:latest --kit ./chrome-devtools-mcp/ /path/to/project
+```
+
+Subsequent builds use Docker layer cache and are fast. Once a published image is available this step will be unnecessary.
+
+### Without a pre-baked image
+
+No prerequisites — downloads Playwright Chromium at create time (~150 MB, takes about a minute):
+
+```bash
+sbx run claude --kit "git+https://github.com/docker/sbx-kits-contrib.git#dir=chrome-devtools-mcp" /path/to/project
 ```
 
 Or with any other agent:
 
 ```bash
-sbx run codex --kit ./chrome-devtools-mcp/ .
-sbx run gemini --kit ./chrome-devtools-mcp/ .
+sbx run codex --kit "git+https://github.com/docker/sbx-kits-contrib.git#dir=chrome-devtools-mcp" .
+sbx run gemini --kit "git+https://github.com/docker/sbx-kits-contrib.git#dir=chrome-devtools-mcp" .
 ```
 
 ## Registering the MCP server
