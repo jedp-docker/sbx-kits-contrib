@@ -82,7 +82,7 @@ Running chrome-devtools-mcp on the host (via `sbx mcp add`) rather than inside t
 For sites where you need to authenticate, prefer attach mode (`CDMCP_BROWSER_URL`): start Chrome separately, log in manually outside the agent session, then point the MCP server at it. The agent still has CDP access to the live session, but it did not drive the authentication flow.
 
 ```bash
-google-chrome --headless --no-sandbox \
+"$CDMCP_CHROME_PATH" --headless --no-sandbox \
   --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 &
 
 export CDMCP_BROWSER_URL=http://127.0.0.1:9222
@@ -125,7 +125,7 @@ If you start Chrome separately — for example to preserve state across MCP serv
 
 ```bash
 # Start Chrome with remote debugging inside the sandbox:
-google-chrome --headless --no-sandbox --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 &
+"$CDMCP_CHROME_PATH" --headless --no-sandbox --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 &
 
 # Then register with attach mode:
 export CDMCP_BROWSER_URL=http://127.0.0.1:9222

@@ -148,14 +148,10 @@ agentContext: |
   - Trusts the sandbox's TLS interception certificate — HTTPS pages work correctly
     without bypassing certificate verification
 
-  ### Registering the MCP server
+  ### Using the MCP server
 
-  Before you can use it, register the server with your agent once:
-
-  **Claude:**
-  ```
-  claude mcp add chrome-devtools --scope local -- chrome-devtools-mcp
-  ```
+  **Claude:** `chrome-devtools` is registered automatically at startup. Verify with
+  `claude mcp list` — you should see it alongside `mcp-gateway`.
 
   **Codex** — append to `~/.codex/config.toml`:
   ```toml
